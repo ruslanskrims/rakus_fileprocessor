@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Rakus.FileProcessor.Tests/Rakus.FileProcessor.Tests.csproj" />
+  <Project Path="Rakus.FileProcessor/Rakus.FileProcessor.csproj" />
+</Solution>
