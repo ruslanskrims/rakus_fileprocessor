@@ -1,15 +1,27 @@
 ﻿using System.Security.Cryptography;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Rakus.FileProcessor.Configuration;
 using Rakus.FileProcessor.Models;
 
 namespace Rakus.FileProcessor.Services;
 
+// Enumerate incoming PDFs and copy each to the destinations selected by the planner.
 public sealed class PdfProcessor
 {
     private readonly FileProcessingOptions _options;
+    private readonly ILogger<PdfProcessor> _logger;
+
+    // Files modified very recently may still be in the process of being written.
+    // This age check is a simple precaution.
     private static readonly TimeSpan MinimumAge = TimeSpan.FromSeconds(10);
 
-    public PdfProcessor(FileProcessingOptions options) => _options = options;
+    // The optional logger keeps tests easy to set up.
+    public PdfProcessor(FileProcessingOptions options, ILogger<PdfProcessor>? logger = null)
+    {
+        _options = options;
+        _logger = logger ?? NullLogger<PdfProcessor>.Instance;
+    }
 
     // Return how many output copies were created, skipped, or failed.
     public (int Copied, int Skipped, int Failed) Process()
@@ -20,6 +32,7 @@ public sealed class PdfProcessor
 
         int copied = 0, skipped = 0, failed = 0;
 
+        // EnumerateFiles is lazy: it does not load all filenames into memory.
         foreach (string sourceFile in Directory.EnumerateFiles(sourceFolder))
         {
             if (!string.Equals(Path.GetExtension(sourceFile), ".pdf",
@@ -32,12 +45,14 @@ public sealed class PdfProcessor
                 continue;
             }
 
+            // Wait for files to age instead of reading a file just created by another system.
             if (DateTime.UtcNow - File.GetLastWriteTimeUtc(sourceFile) < MinimumAge)
             {
                 skipped++;
                 continue;
             }
 
+            // An error in one source file must not prevent processing the others.
             try
             {
                 foreach (var destination in PdfRoutingPlanner.Plan(info))
@@ -52,13 +67,14 @@ public sealed class PdfProcessor
             }
             catch (IOException)
             {
+                // Intentionally do not log the patient identifier in a filename.
                 failed++;
-                Console.Error.WriteLine("A PDF could not be delivered; it will be retried next run.");
+                _logger.LogWarning("One PDF could not be delivered; it will be retried next run.");
             }
             catch (UnauthorizedAccessException)
             {
                 failed++;
-                Console.Error.WriteLine("No permission to process one PDF.");
+                _logger.LogWarning("No permission to process one PDF.");
             }
         }
 
@@ -68,6 +84,7 @@ public sealed class PdfProcessor
     // Resolve relative paths against the directory containing the application.
     private static string FullPath(string path)
     {
+        // Reject missing directory settings instead of silently using the EXE directory.
         if (string.IsNullOrWhiteSpace(path))
             throw new InvalidOperationException("A required directory path is missing.");
 
@@ -98,6 +115,8 @@ public sealed class PdfProcessor
             throw new IOException("Destination already exists with different content.");
         }
 
+        // Write to a random temporary name in the TARGET directory.
+        // Consumers will not see a partly written destination *.PDF.
         string directory = Path.GetDirectoryName(destinationPath)!;
         string tempPath = Path.Combine(directory, $".copy-{Guid.NewGuid():N}.tmp");
 
@@ -109,9 +128,12 @@ public sealed class PdfProcessor
                 temp.Flush(flushToDisk: true);
             }
 
+            // Move inside the same directory is normally atomic on local file systems.
+            // No overwrite: a previous file must never be silently replaced.
             try { File.Move(tempPath, destinationPath); }
             catch (IOException) when (File.Exists(destinationPath))
             {
+                // Another instance may have delivered the PDF at the same time.
                 if (SameContent(source, destinationPath)) return false;
                 throw;
             }
@@ -120,11 +142,12 @@ public sealed class PdfProcessor
         }
         finally
         {
+            // Remove a leftover temp file if copying or publishing fails.
             if (File.Exists(tempPath)) File.Delete(tempPath);
         }
     }
 
-    // Compare hashes of the files
+    // Compare hashes rather than assuming a matching filename means matching bytes.
     private static bool SameContent(FileStream source, string destinationPath)
     {
         using var destination = File.OpenRead(destinationPath);

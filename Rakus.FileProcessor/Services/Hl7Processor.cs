@@ -1,14 +1,22 @@
 ﻿using Rakus.FileProcessor.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Rakus.FileProcessor.Services;
 
-// Scan the incoming HL7 folder once and create one JSON result for each source
+// Scan the incoming HL7 folder once and create one JSON result for each source.
 public sealed class Hl7Processor
 {
     private readonly FileProcessingOptions _options;
+    private readonly ILogger<Hl7Processor> _logger;
     private static readonly TimeSpan MinimumAge = TimeSpan.FromSeconds(10);
 
-    public Hl7Processor(FileProcessingOptions options) => _options = options;
+    // The optional logger keeps tests easy to set up.
+    public Hl7Processor(FileProcessingOptions options, ILogger<Hl7Processor>? logger = null)
+    {
+        _options = options;
+        _logger = logger ?? NullLogger<Hl7Processor>.Instance;
+    }
 
     public (int Exported, int Skipped, int Failed) Process()
     {
@@ -25,6 +33,7 @@ public sealed class Hl7Processor
                     StringComparison.OrdinalIgnoreCase))
                 continue;
 
+            // A short delay helps avoid reading an upload that is not finished yet.
             if (DateTime.UtcNow - File.GetLastWriteTimeUtc(sourceFile) < MinimumAge)
             {
                 skipped++;
@@ -33,6 +42,7 @@ public sealed class Hl7Processor
 
             try
             {
+                // Keep the input open with read-only sharing while loading it.
                 using var stream = new FileStream(sourceFile, FileMode.Open, FileAccess.Read, FileShare.Read);
                 using var reader = new StreamReader(stream);
                 string content = reader.ReadToEnd();
@@ -41,6 +51,7 @@ public sealed class Hl7Processor
                 var lines = content.Replace("\r", "").Split('\n');
                 var rows = Hl7Parser.Parse(lines);
 
+                // Preserve the source name in the export: example.hl7 -> example.hl7.json.
                 string target = Path.Combine(outputDirectory,
                     Path.GetFileName(sourceFile) + ".json");
                 if (BiJsonExporter.Export(rows, target)) exported++;
@@ -50,7 +61,8 @@ public sealed class Hl7Processor
                 or FormatException or System.Text.Json.JsonException)
             {
                 failed++;
-                Console.Error.WriteLine("An HL7 file could not be exported; it will be retried.");
+                // Never output the file name or patient ID to the console.
+                _logger.LogWarning("One HL7 file could not be exported; it will be retried.");
             }
         }
 
@@ -59,7 +71,6 @@ public sealed class Hl7Processor
 
     private static string FullPath(string path)
     {
-        // Reject missing directory settings instead of silently using the EXE directory.
         if (string.IsNullOrWhiteSpace(path))
             throw new InvalidOperationException("A required directory path is missing.");
 

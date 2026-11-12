@@ -31,7 +31,7 @@ public sealed class Hl7Tests
         string output = Path.Combine(temp.Path, "BI");
         Directory.CreateDirectory(input);
 
-        // Generate five synthetic HL7 documents
+        // Generate five synthetic HL7 documents, not real patient data.
         for (int i = 1; i <= 5; i++)
         {
             string path = Path.Combine(input, $"patient-{i}.hl7");
