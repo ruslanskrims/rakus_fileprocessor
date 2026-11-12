@@ -32,49 +32,63 @@ public sealed class PdfProcessor
 
         int copied = 0, skipped = 0, failed = 0;
 
-        // EnumerateFiles is lazy: it does not load all filenames into memory.
+        //Imoprovement:Prevent a disappearing or inaccessible file from interrupting the entire processing run
         foreach (string sourceFile in Directory.EnumerateFiles(sourceFolder))
         {
-            if (!string.Equals(Path.GetExtension(sourceFile), ".pdf",
-                    StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(
+                Path.GetExtension(sourceFile),
+                ".pdf",
+                StringComparison.OrdinalIgnoreCase))
                 continue;
 
-            if (!PdfFilenameParser.TryParse(Path.GetFileName(sourceFile), out var info))
-            {
-                skipped++;
-                continue;
-            }
-
-            // Wait for files to age instead of reading a file just created by another system.
-            if (DateTime.UtcNow - File.GetLastWriteTimeUtc(sourceFile) < MinimumAge)
-            {
-                skipped++;
-                continue;
-            }
-
-            // An error in one source file must not prevent processing the others.
             try
             {
+                // Validate the filename before processing.
+                // Invalid filenames are skipped without throwing exceptions.
+                if (!PdfFilenameParser.TryParse(
+                    Path.GetFileName(sourceFile), out var info))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                // Reduce the risk of processing a file that is still being written.
+                // The age check is a precaution, not a guarantee of completeness.
+                if (DateTime.UtcNow -
+                    File.GetLastWriteTimeUtc(sourceFile) < MinimumAge)
+                {
+                    skipped++;
+                    continue;
+                }
+
                 foreach (var destination in PdfRoutingPlanner.Plan(info))
                 {
-                    string folder = FullPath(GetDestinationPath(destination.Folder));
-                    Directory.CreateDirectory(folder);
-                    string targetFile = Path.Combine(folder, destination.FileName);
+                    string folder = FullPath(
+                        GetDestinationPath(destination.Folder));
 
-                    if (CopySafely(sourceFile, targetFile)) copied++;
-                    else skipped++;
+                    Directory.CreateDirectory(folder);
+
+                    string targetFile = Path.Combine(
+                        folder, destination.FileName);
+
+                    if (CopySafely(sourceFile, targetFile))
+                        copied++;
+                    else
+                        skipped++;
                 }
             }
             catch (IOException)
             {
-                // Intentionally do not log the patient identifier in a filename.
                 failed++;
-                _logger.LogWarning("One PDF could not be delivered; it will be retried next run.");
+                _logger.LogWarning(
+                    "PDF processing failed; retry on the next run.");
             }
             catch (UnauthorizedAccessException)
             {
                 failed++;
-                _logger.LogWarning("No permission to process one PDF.");
+                // Report access problems without including sensitive filenames
+                _logger.LogWarning(
+                    "Insufficient permissions to process a PDF.");
             }
         }
 
@@ -128,8 +142,10 @@ public sealed class PdfProcessor
                 temp.Flush(flushToDisk: true);
             }
 
-            // Move inside the same directory is normally atomic on local file systems.
-            // No overwrite: a previous file must never be silently replaced.
+            // Publish the PDF only after the temporary copy is complete.
+            // Renaming within the same filesystem is normally atomic,
+            // preventing consumers from seeing a partially copied final file.
+            // Never overwrite an existing destination.
             try { File.Move(tempPath, destinationPath); }
             catch (IOException) when (File.Exists(destinationPath))
             {
@@ -140,22 +156,45 @@ public sealed class PdfProcessor
 
             return true;
         }
+        // Improvement: Remove temporary files after successful or failed processing.
+        // Cleanup failures must not hide the original exception.
         finally
         {
-            // Remove a leftover temp file if copying or publishing fails.
-            if (File.Exists(tempPath)) File.Delete(tempPath);
+            
+            try
+            {
+                if (File.Exists(tempPath))
+                    File.Delete(tempPath);
+            }
+            catch (IOException)
+            {
+                // Best-effort cleanup; an administrator may need
+                // to remove a leftover temporary file.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Cleanup may fail if filesystem permissions change.
+            }
         }
     }
 
-    // Compare hashes rather than assuming a matching filename means matching bytes.
-    private static bool SameContent(FileStream source, string destinationPath)
+    // Compare file sizes and SHA-256 hashes to detect duplicate content
+    // Improvement:Identical files are skipped; conflicting files are never overwritten
+    private static bool SameContent(
+        FileStream source,
+        string destinationPath)
     {
         using var destination = File.OpenRead(destinationPath);
-        if (source.Length != destination.Length) return false;
+
+        if (source.Length != destination.Length)
+            return false;
 
         source.Position = 0;
+
         byte[] sourceHash = SHA256.HashData(source);
         byte[] destinationHash = SHA256.HashData(destination);
+
         return sourceHash.AsSpan().SequenceEqual(destinationHash);
     }
+
 }

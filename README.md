@@ -1,32 +1,38 @@
 # RAKUS File Processor
 
-A .NET console application for processing medical integration files
+.NET console application for processing PDF and HL7 files.
 
-# Author
+The application has two main functions:
+- **PDF processing:** Copies PDF files to the correct folders based on their filenames.
+- **HL7 processing:** Reads patient and procedure information from HL7 files and exports it to JSON for BI reporting.
 
-Ruslans Krims
+## Project structure
 
-## Features
+- `Rakus.FileProcessor` — Console application and file processing.
+- `Rakus.FileProcessor.Core` — Models, PDF routing and HL7 parsing.
+- `Rakus.FileProcessor.Tests` — Unit tests.
 
-Planned functionality:
-- PDF file distribution
-- HL7 message parsing
-- Structured JSON export for BI
-- Logging and error handling
-- Automated tests
+## Configuration
 
-## Technology stack
+Folder paths can be changed in `appsettings.json`.
 
-- C#
-- .NET 10
+## How to run
 
-## How to Run the application
+Process PDF files:
 
-Build the application:
+```bash
+dotnet run --project Rakus.FileProcessor -- --pdf
+```
 
-    dotnet build
+Process HL7 files:
 
-Run the application:
+```bash
+dotnet run --project Rakus.FileProcessor -- --hl7
+```
 
-    dotnet run --project Rakus.FileProcessor
+## Notes
 
+- Source files are not deleted or modified.
+- Existing files with identical content are skipped.
+- Processing errors are logged without patient identifiers.
+- The application can be run periodically using Windows Task Scheduler.
